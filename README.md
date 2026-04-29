@@ -6,6 +6,8 @@ Weekly Market Health Report based on 4 key market forces:
 - Liquidity
 - Sentiment
 
+Based on the Youtube video https://youtu.be/3d6fBX99lAw?is=8y61e3a0gEjmKJqr (Felix Prehn)
+
 ## Usage
 
 ```bash

@@ -2,84 +2,201 @@
 """
 Weekly Market Health Report
 Based on the 4 forces from the video "Why the Stock Market REFUSES to Crash"
+
+Forces tracked:
+  1. Fed Put        -> VIX, Oil (inflation proxy), 10Y Treasury yield
+  2. Passive Money  -> SPX vs 200DMA + 50DMA trend (jobs proxy: HYG/LQD credit spread)
+  3. Algorithms     -> SPX trend (200DMA + 50DMA) + VIX regime
+  4. Options/Retail -> Put/Call ratio (^CPC), fallback to VIX term structure
 """
 
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-import sys
 
-# ==================== CONFIGURATION ====================
 REPORT_FILE = "market_health_report.txt"
+
+
+def _last(series):
+    """Return the last non-NaN value of a series, or None."""
+    s = series.dropna()
+    return float(s.iloc[-1]) if len(s) else None
+
+
+def _safe_fetch(ticker, period="1y"):
+    try:
+        return yf.Ticker(ticker).history(period=period)["Close"]
+    except Exception:
+        return pd.Series(dtype=float)
+
 
 def get_market_data():
     data = {}
     try:
-        # Download latest data
-        spx = yf.Ticker("^GSPC").history(period="3mo")["Close"]
-        vix = yf.Ticker("^VIX").history(period="1mo")["Close"]
-        tnx = yf.Ticker("^TNX").history(period="1mo")["Close"]
-        oil = yf.Ticker("CL=F").history(period="1mo")["Close"]
+        spx = _safe_fetch("^GSPC", "2y")
+        vix = _safe_fetch("^VIX", "3mo")
+        tnx = _safe_fetch("^TNX", "3mo")   # 10Y yield
+        fvx = _safe_fetch("^FVX", "3mo")   # 5Y yield
+        irx = _safe_fetch("^IRX", "3mo")   # 3M yield (2Y proxy)
+        oil = _safe_fetch("CL=F", "3mo")
+        pcr = _safe_fetch("^CPC", "1mo")   # CBOE put/call ratio
+        hyg = _safe_fetch("HYG", "3mo")    # junk bond ETF
+        lqd = _safe_fetch("LQD", "3mo")    # investment grade ETF
 
-        data["SPX_Price"] = round(spx.iloc[-1], 2)
+        data["SPX_Price"]  = round(_last(spx), 2) if _last(spx) else None
+        data["SPX_50DMA"]  = round(spx.rolling(50).mean().iloc[-1], 2)  if len(spx) >= 50  else None
         data["SPX_200DMA"] = round(spx.rolling(200).mean().iloc[-1], 2) if len(spx) >= 200 else None
-        data["VIX"] = round(vix.iloc[-1], 2)
-        data["TNX"] = round(tnx.iloc[-1], 3)
-        data["Oil"] = round(oil.iloc[-1], 2)
-        
-        if data["SPX_200DMA"] is not None:
-            data["Above_200DMA"] = data["SPX_Price"] > data["SPX_200DMA"]
+        data["VIX"]        = round(_last(vix), 2) if _last(vix) else None
+        data["TNX_10Y"]    = round(_last(tnx), 3) if _last(tnx) else None
+        data["FVX_5Y"]     = round(_last(fvx), 3) if _last(fvx) else None
+        data["IRX_3M"]     = round(_last(irx), 3) if _last(irx) else None
+        data["Oil_WTI"]    = round(_last(oil), 2) if _last(oil) else None
+        data["PutCall"]    = round(_last(pcr), 3) if _last(pcr) else None
+
+        # Yield curve (10Y - 3M). Negative = inverted = recession signal.
+        if data["TNX_10Y"] is not None and data["IRX_3M"] is not None:
+            data["YieldCurve"] = round(data["TNX_10Y"] - data["IRX_3M"], 3)
         else:
-            data["Above_200DMA"] = False
+            data["YieldCurve"] = None
+
+        # Credit spread proxy: HYG/LQD ratio. Falling ratio = credit stress.
+        if _last(hyg) and _last(lqd):
+            data["HYG_LQD"] = round(_last(hyg) / _last(lqd), 4)
+            # 20-day change to detect stress
+            if len(hyg) >= 20 and len(lqd) >= 20:
+                ratio_now = hyg.iloc[-1] / lqd.iloc[-1]
+                ratio_20d = hyg.iloc[-20] / lqd.iloc[-20]
+                data["Credit_20dChg_%"] = round((ratio_now / ratio_20d - 1) * 100, 2)
+            else:
+                data["Credit_20dChg_%"] = None
+        else:
+            data["HYG_LQD"] = None
+            data["Credit_20dChg_%"] = None
+
+        # Trend flags
+        data["Above_200DMA"] = (data["SPX_Price"] is not None
+                                and data["SPX_200DMA"] is not None
+                                and data["SPX_Price"] > data["SPX_200DMA"])
+        data["Above_50DMA"]  = (data["SPX_Price"] is not None
+                                and data["SPX_50DMA"] is not None
+                                and data["SPX_Price"] > data["SPX_50DMA"])
 
     except Exception as e:
         print(f"Error fetching market data: {e}")
         data["Error"] = str(e)
-    
+
     return data
 
 
 def evaluate_indicators(data):
     ratings = {}
 
-    # 1. Fed Put
-    if data.get("VIX", 0) > 35 or data.get("Oil", 0) > 110:
-        ratings["Fed_Put"] = "--"
-    elif data.get("VIX", 0) > 25 or data.get("Oil", 0) > 90:
-        ratings["Fed_Put"] = "-"
+    vix   = data.get("VIX") or 0
+    oil   = data.get("Oil_WTI") or 0
+    tnx   = data.get("TNX_10Y") or 0
+    curve = data.get("YieldCurve")
+    pcr   = data.get("PutCall")
+    credit_chg = data.get("Credit_20dChg_%")
+
+    # --- 1. Fed Put ---
+    # Kill switches per video: inflation (oil proxy), bond yields above ~5%
+    fed_score = 0
+    if vix > 30 or oil > 110 or tnx > 5.5:
+        fed_score = -2
+    elif vix > 22 or oil > 90 or tnx > 4.8:
+        fed_score = -1
+    elif vix < 18 and oil < 85 and tnx < 4.5:
+        fed_score = 2
     else:
-        ratings["Fed_Put"] = "++"
+        fed_score = 1
+    ratings["Fed_Put"] = _score_to_label(fed_score)
 
-    # 2. Passive Money Machine
-    ratings["Passive"] = "++" if data.get("Above_200DMA") else "-"
-
-    # 3. Algorithms / Trend Followers
-    if data.get("Above_200DMA") and data.get("VIX", 0) < 20:
-        ratings["Algos"] = "++"
-    elif data.get("Above_200DMA"):
-        ratings["Algos"] = "+"
+    # --- 2. Passive Money Machine ---
+    # Proxy kill switch: credit stress (precursor to unemployment / liquidations)
+    passive_score = 0
+    above_200 = data.get("Above_200DMA")
+    if credit_chg is not None and credit_chg < -2:
+        passive_score = -2       # credit cracking -> 401k liquidation risk
+    elif credit_chg is not None and credit_chg < -0.5:
+        passive_score = -1
+    elif above_200 and (credit_chg is None or credit_chg > 0):
+        passive_score = 2
+    elif above_200:
+        passive_score = 1
     else:
-        ratings["Algos"] = "--"
+        passive_score = -1
+    ratings["Passive"] = _score_to_label(passive_score)
 
-    # 4. Options Market Makers & Retail
-    ratings["Options"] = "+"   # Can be extended later with Put/Call ratio
+    # --- 3. Algorithms / CTAs ---
+    # Trend + volatility regime
+    above_50  = data.get("Above_50DMA")
+    if above_200 and above_50 and vix < 18:
+        algo_score = 2
+    elif above_200 and above_50:
+        algo_score = 1
+    elif above_200 and not above_50:
+        algo_score = 0           # short-term weakness
+    elif above_50 and not above_200:
+        algo_score = -1          # bounce in downtrend
+    else:
+        algo_score = -2
+    ratings["Algos"] = _score_to_label(algo_score)
 
-    # Overall Score
-    score_map = {"++": 2, "+": 1, "-": -1, "--": -2}
-    total_score = sum(score_map.get(r, 0) for r in ratings.values())
+    # --- 4. Options Market Makers & Retail ---
+    # Put/Call ratio: high = fear (contrarian bullish), low = complacency
+    if pcr is not None:
+        if pcr > 1.20:
+            opt_score = 2        # panic -> MMs forced buying
+        elif pcr > 0.95:
+            opt_score = 1
+        elif pcr > 0.75:
+            opt_score = 0
+        elif pcr > 0.55:
+            opt_score = -1       # complacency
+        else:
+            opt_score = -2       # extreme complacency
+    else:
+        # Fallback: VIX-based
+        opt_score = 1 if vix < 18 else (-1 if vix > 25 else 0)
+    ratings["Options"] = _score_to_label(opt_score)
 
-    if total_score >= 6:
+    # --- Bonus signal: yield curve (not a "force" but strong crash precursor) ---
+    if curve is not None:
+        if curve < -0.5:
+            ratings["YieldCurve"] = "--"   # strong inversion
+        elif curve < 0:
+            ratings["YieldCurve"] = "-"
+        elif curve < 1:
+            ratings["YieldCurve"] = "+"
+        else:
+            ratings["YieldCurve"] = "++"
+    else:
+        ratings["YieldCurve"] = "0"
+
+    # Overall
+    score_map = {"++": 2, "+": 1, "0": 0, "-": -1, "--": -2}
+    total = sum(score_map.get(r, 0) for r in ratings.values())
+
+    if total >= 7:
         overall = "++ Very Stable"
-    elif total_score >= 3:
+    elif total >= 3:
         overall = "+ Stable"
-    elif total_score >= -1:
+    elif total >= -2:
         overall = "0 Neutral"
-    elif total_score >= -4:
+    elif total >= -5:
         overall = "- Caution"
     else:
         overall = "-- High Risk"
 
-    return ratings, overall, total_score
+    return ratings, overall, total
+
+
+def _score_to_label(s):
+    if s >= 2:  return "++"
+    if s == 1:  return "+"
+    if s == 0:  return "0"
+    if s == -1: return "-"
+    return "--"
 
 
 def create_report():
@@ -93,19 +210,17 @@ def create_report():
         f.write(f"Market Health Report – {today.strftime('%d.%m.%Y')}\n")
         f.write("=" * 65 + "\n\n")
         f.write(f"Overall Assessment: {overall}  (Score: {total})\n\n")
-        
-        f.write("Rating of the 4 Forces:\n")
+
+        f.write("Rating of the 4 Forces (+ Yield Curve):\n")
         for name, rating in ratings.items():
             f.write(f"  {name.replace('_', ' '):<18} : {rating}\n")
-        
+
         f.write("\nKey Indicators:\n")
         for key, value in data.items():
             if value is not None and key != "Error":
-                f.write(f"  {key:<15}: {value}\n")
+                f.write(f"  {key:<18}: {value}\n")
 
     print(f"\nReport successfully created: {REPORT_FILE}")
-    
-    # Display the report
     with open(REPORT_FILE, "r", encoding="utf-8") as f:
         print("\n" + f.read())
 

@@ -1,0 +1,26 @@
+Market Health Report – 30.04.2026
+=================================================================
+
+Overall Assessment: + Stable  (Score: 3)
+
+Rating of the 4 Forces (+ Yield Curve):
+  Fed Put            : -
+  Passive            : ++
+  Algos              : +
+  Options            : 0
+  YieldCurve         : +
+
+Key Indicators:
+  SPX_Price         : 7135.95
+  SPX_50DMA         : 6808.0
+  SPX_200DMA        : 6718.79
+  VIX               : 18.61
+  TNX_10Y           : 4.418
+  FVX_5Y            : 4.065
+  IRX_3M            : 3.59
+  Oil_WTI           : 108.4
+  YieldCurve        : 0.828
+  HYG_LQD           : 0.737
+  Credit_20dChg_%   : 0.89
+  Above_200DMA      : True
+  Above_50DMA       : True

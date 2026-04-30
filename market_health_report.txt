@@ -14,11 +14,11 @@ Key Indicators:
   SPX_Price         : 7135.95
   SPX_50DMA         : 6808.0
   SPX_200DMA        : 6718.79
-  VIX               : 18.61
+  VIX               : 18.54
   TNX_10Y           : 4.418
   FVX_5Y            : 4.065
   IRX_3M            : 3.59
-  Oil_WTI           : 108.4
+  Oil_WTI           : 108.23
   YieldCurve        : 0.828
   HYG_LQD           : 0.737
   Credit_20dChg_%   : 0.89

@@ -10,11 +10,18 @@ Forces tracked:
   4. Options/Retail -> Put/Call ratio (^CPC), fallback to VIX term structure
 """
 
+import os
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
 
+try:
+    from fredapi import Fred
+except ImportError:
+    Fred = None
+
 REPORT_FILE = "market_health_report.txt"
+FRED_API_KEY = os.environ.get("FRED_API_KEY")
 
 
 def _last(series):
@@ -28,6 +35,27 @@ def _safe_fetch(ticker, period="1y"):
         return yf.Ticker(ticker).history(period=period)["Close"]
     except Exception:
         return pd.Series(dtype=float)
+
+
+def _fetch_fred():
+    """Fetch macro indicators from FRED. Returns {} if no key / library."""
+    out = {}
+    if not FRED_API_KEY or Fred is None:
+        return out
+    try:
+        fred = Fred(api_key=FRED_API_KEY)
+        unrate = fred.get_series("UNRATE").dropna()          # Unemployment rate %
+        cpi    = fred.get_series("CPIAUCSL").dropna()        # CPI index
+        if len(unrate):
+            out["Unemployment_%"] = round(float(unrate.iloc[-1]), 2)
+            if len(unrate) >= 4:
+                out["Unemp_3mo_chg"] = round(float(unrate.iloc[-1] - unrate.iloc[-4]), 2)
+        if len(cpi) >= 13:
+            yoy = (cpi.iloc[-1] / cpi.iloc[-13] - 1) * 100
+            out["CPI_YoY_%"] = round(float(yoy), 2)
+    except Exception as e:
+        out["FRED_Error"] = str(e)
+    return out
 
 
 def get_market_data():
@@ -81,6 +109,9 @@ def get_market_data():
                                 and data["SPX_50DMA"] is not None
                                 and data["SPX_Price"] > data["SPX_50DMA"])
 
+        # Optional FRED macro indicators
+        data.update(_fetch_fred())
+
     except Exception as e:
         print(f"Error fetching market data: {e}")
         data["Error"] = str(e)
@@ -97,26 +128,41 @@ def evaluate_indicators(data):
     curve = data.get("YieldCurve")
     pcr   = data.get("PutCall")
     credit_chg = data.get("Credit_20dChg_%")
+    cpi   = data.get("CPI_YoY_%")           # real inflation, if available
+    unemp = data.get("Unemployment_%")
+    unemp_chg = data.get("Unemp_3mo_chg")
 
     # --- 1. Fed Put ---
-    # Kill switches per video: inflation (oil proxy), bond yields above ~5%
+    # Real CPI overrides oil-based inflation proxy when available
     fed_score = 0
-    if vix > 30 or oil > 110 or tnx > 5.5:
+    inflation_hot = (cpi is not None and cpi > 4.0) or (cpi is None and oil > 110)
+    inflation_warm = (cpi is not None and cpi > 3.0) or (cpi is None and oil > 90)
+    if vix > 30 or inflation_hot or tnx > 5.5:
         fed_score = -2
-    elif vix > 22 or oil > 90 or tnx > 4.8:
+    elif vix > 22 or inflation_warm or tnx > 4.8:
         fed_score = -1
-    elif vix < 18 and oil < 85 and tnx < 4.5:
+    elif vix < 18 and (cpi is None or cpi < 2.5) and tnx < 4.5:
         fed_score = 2
     else:
         fed_score = 1
     ratings["Fed_Put"] = _score_to_label(fed_score)
 
     # --- 2. Passive Money Machine ---
-    # Proxy kill switch: credit stress (precursor to unemployment / liquidations)
+    # Real unemployment > credit spread > 200DMA (fallback hierarchy)
     passive_score = 0
     above_200 = data.get("Above_200DMA")
-    if credit_chg is not None and credit_chg < -2:
-        passive_score = -2       # credit cracking -> 401k liquidation risk
+    if unemp is not None:
+        # Sahm-rule style: 3mo rise of 0.5%+ is recession signal
+        if unemp_chg is not None and unemp_chg >= 0.5:
+            passive_score = -2
+        elif unemp_chg is not None and unemp_chg >= 0.3:
+            passive_score = -1
+        elif unemp < 4.5:
+            passive_score = 2
+        else:
+            passive_score = 1
+    elif credit_chg is not None and credit_chg < -2:
+        passive_score = -2
     elif credit_chg is not None and credit_chg < -0.5:
         passive_score = -1
     elif above_200 and (credit_chg is None or credit_chg > 0):

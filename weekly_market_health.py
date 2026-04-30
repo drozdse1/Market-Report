@@ -40,7 +40,14 @@ def _safe_fetch(ticker, period="1y"):
 def _fetch_fred():
     """Fetch macro indicators from FRED. Returns {} if no key / library."""
     out = {}
-    if not FRED_API_KEY or Fred is None:
+    if Fred is None:
+        out["_FRED_Warning"] = "fredapi not installed -> run: pip install fredapi"
+        return out
+    if not FRED_API_KEY:
+        out["_FRED_Warning"] = (
+            "FRED_API_KEY not set -> using proxies (oil for CPI, 200DMA for unemployment). "
+            "Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html"
+        )
         return out
     try:
         fred = Fred(api_key=FRED_API_KEY)
@@ -252,9 +259,15 @@ def create_report():
     data = get_market_data()
     ratings, overall, total = evaluate_indicators(data)
 
+    warning = data.pop("_FRED_Warning", None)
+    if warning:
+        print(f"\n[WARNING] {warning}\n")
+
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
         f.write(f"Market Health Report – {today.strftime('%d.%m.%Y')}\n")
         f.write("=" * 65 + "\n\n")
+        if warning:
+            f.write(f"[WARNING] {warning}\n\n")
         f.write(f"Overall Assessment: {overall}  (Score: {total})\n\n")
 
         f.write("Rating of the 4 Forces (+ Yield Curve):\n")
@@ -263,7 +276,7 @@ def create_report():
 
         f.write("\nKey Indicators:\n")
         for key, value in data.items():
-            if value is not None and key != "Error":
+            if value is not None and key != "Error" and not key.startswith("_"):
                 f.write(f"  {key:<18}: {value}\n")
 
     print(f"\nReport successfully created: {REPORT_FILE}")

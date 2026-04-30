@@ -11,6 +11,8 @@ Forces tracked:
 """
 
 import os
+import warnings
+import logging
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
@@ -35,6 +37,24 @@ def _safe_fetch(ticker, period="1y"):
         return yf.Ticker(ticker).history(period=period)["Close"]
     except Exception:
         return pd.Series(dtype=float)
+
+
+def _quiet_fetch(ticker, period="1y"):
+    """Fetch with all warnings/logging suppressed (for known-broken tickers)."""
+    import io, sys
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _yf_logger = logging.getLogger("yfinance")
+        _prev = _yf_logger.level
+        _yf_logger.setLevel(logging.CRITICAL)
+        _old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            result = _safe_fetch(ticker, period)
+        finally:
+            sys.stderr = _old_stderr
+            _yf_logger.setLevel(_prev)
+    return result
 
 
 def _fetch_fred():
@@ -74,7 +94,7 @@ def get_market_data():
         fvx = _safe_fetch("^FVX", "3mo")   # 5Y yield
         irx = _safe_fetch("^IRX", "3mo")   # 3M yield (2Y proxy)
         oil = _safe_fetch("CL=F", "3mo")
-        pcr = _safe_fetch("^CPC", "1mo")   # CBOE put/call ratio
+        pcr = _quiet_fetch("^CPC", "1mo")  # delisted on Yahoo; suppressed
         hyg = _safe_fetch("HYG", "3mo")    # junk bond ETF
         lqd = _safe_fetch("LQD", "3mo")    # investment grade ETF
 

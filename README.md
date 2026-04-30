@@ -11,8 +11,20 @@ Based on the Youtube video https://youtu.be/3d6fBX99lAw?is=8y61e3a0gEjmKJqr (Fel
 ## Usage
 
 ```bash
+pip install -r requirements.txt
 python weekly_market_health.py
 ```
+
+### Optional: FRED Integration
+
+For real unemployment & CPI data (instead of proxies), set a free FRED API key:
+
+```bash
+export FRED_API_KEY="your_key_here"
+python weekly_market_health.py
+```
+
+Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html
 
 ## Example Output
 
